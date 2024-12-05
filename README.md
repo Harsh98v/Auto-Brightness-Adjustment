@@ -34,10 +34,10 @@ pip install Pillow pandas
 
 ### 2. Modifying the Script
 
-- Update the `phyphox_ip` variable in the script with the correct IP address from your PhyPhox app.
+- Update the `IPAddress` variable in the script with the correct IP address from your PhyPhox app.
   
 ```python
-phyphox_ip = "http://10.0.0.236:8080"  # Replace with your PhyPhox IP
+IPAddress = "http://10.0.0.236:8080"  # Replace with your PhyPhox IP
 ```
 
 - Provide the path to the Excel file containing the Lux data in the `adjust_image_brightness` function call.
