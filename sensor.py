@@ -15,7 +15,7 @@ import xlrd
 import matplotlib.pyplot as plt  # Import for plotting
 
 # PhyPhox server configuration
-IPAddress = '172.17.74.162:8080'  # Replace with your PhyPhox IP
+IPAddress = '172.17.79.151:8080'  # Replace with your PhyPhox IP
 num_data = 5
 pause_tm = 2
 
