@@ -6,12 +6,18 @@ import os
 from datetime import datetime
 from PIL import Image, ImageEnhance
 import pandas as pd
-import matplotlib.pyplot as plt
+import openpyxl
+import cv2
+import numpy as np
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import xlrd
+import matplotlib.pyplot as plt  # Import for plotting
 
 # PhyPhox server configuration
-IPAddress = '192.168.1.6:8080'  # Replace with your PhyPhox IP
-num_data = 5  # Number of data pulls in each session
-pause_tm = 2  # Time interval between data collections in seconds
+IPAddress = '172.17.79.151:8080'  # Replace with your PhyPhox IP
+num_data = 5
+pause_tm = 2
 
 # URLs for data management
 save_dat = f'http://{IPAddress}/export?format=0'
@@ -21,32 +27,54 @@ start_dat = f'http://{IPAddress}/control?cmd=start'
 # Load the image for brightness adjustment
 image_path = "image.png"
 image = Image.open(image_path)
+image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+data_folder = "./Data"
+os.makedirs(data_folder, exist_ok=True)
+
+# Initialize metrics and brightness logs
+brightness_logs = []  # To store timestamps and brightness factors
+data_collection_times = []
+file_processing_times = []
+image_adjustment_times = []
+success_count = {"data_collection": 0, "file_processing": 0, "image_adjustment": 0}
+error_count = {"data_collection": 0, "file_processing": 0, "image_adjustment": 0}
 
 def lux_to_brightness(lux):
     """Convert Lux value to a brightness factor."""
-    if lux < 100:
-        return 0.5
-    elif lux < 1000:
-        return 1.0
-    elif lux < 5000:
-        return 1.5
-    else:
-        return 2.0
+    return 1 + (lux / 1000)
 
 def collect_data():
-    """Collect data and save using Chrome, with timestamped file names."""
+    """Collect data from PhyPhox and save as Excel files in the Data folder."""
     for _ in range(num_data):
         timestamp = datetime.now().strftime("Light %Y-%m-%d_%H-%M-%S")
-        webbrowser.get("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe %s").open(save_dat)
-        print(f"Data collected: {timestamp}")
+        file_path = os.path.join(data_folder, f"{timestamp}.xlsx")
+
+        start_time = time.time()
+        try:
+            response = urllib.request.urlopen(save_dat)
+            data = response.read()
+            with open(file_path, 'wb') as f:
+                f.write(data)
+
+            end_time = time.time()
+            data_collection_times.append(end_time - start_time)
+            success_count["data_collection"] += 1
+            print(f"Data collected and saved at {file_path}")
+        except Exception as e:
+            error_count["data_collection"] += 1
+            print(f"Failed to download data: {e}")
+
         time.sleep(pause_tm)
 
 def clear_and_restart_collection():
     """Clear and restart data collection."""
-    urllib.request.urlopen(clear_dat)
-    print("Data cleared.")
-    urllib.request.urlopen(start_dat)
-    print("Data collection restarted.")
+    try:
+        urllib.request.urlopen(clear_dat, timeout=10)
+        urllib.request.urlopen(start_dat, timeout=10)
+        print("Data collection restarted.")
+    except urllib.error.URLError as e:
+        print("Connection error:", e)
 
 def continuous_data_collection():
     """Thread function for continuous data collection."""
@@ -55,50 +83,84 @@ def continuous_data_collection():
         clear_and_restart_collection()
 
 def get_lux_values_from_excel(file_path):
-    """Read Lux values from the Excel file."""
+    """Read Lux values from an Excel file."""
     try:
         df = pd.read_excel(file_path)
-        lux_values = df['Illuminance (lx)'].tolist()
+        lux_values = df['Illuminance (lx)'].tolist() if 'Illuminance (lx)' in df.columns else []
         return lux_values
     except Exception as e:
+        error_count["file_processing"] += 1
         print("Error reading Excel file:", e)
         return []
 
-def adjust_image_brightness(file_path):
-    """Adjust image brightness based on Lux data and display the image."""
+def adjust_image_brightness_and_display(file_path):
+    """Adjust image brightness based on Lux data and log values."""
     lux_values = get_lux_values_from_excel(file_path)
-    for lux in lux_values:
-        brightness_factor = lux_to_brightness(lux)
-        enhancer = ImageEnhance.Brightness(image)
-        brightened_image = enhancer.enhance(brightness_factor)
+    if lux_values:
+        for lux in lux_values:
+            try:
+                brightness_factor = lux_to_brightness(lux)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                brightness_logs.append((timestamp, brightness_factor))  # Log brightness
+                
+                enhancer = ImageEnhance.Brightness(image)
+                brightened_image = enhancer.enhance(brightness_factor)
+                brightened_image_cv = cv2.cvtColor(np.array(brightened_image), cv2.COLOR_RGB2BGR)
 
-        # Display the adjusted image using matplotlib
-        plt.imshow(brightened_image)
-        plt.title(f"Brightness Adjusted by Lux: {lux} lx")
-        plt.axis('off')
-        plt.pause(2)  # Pause to allow for viewing the adjusted image
-    
-    plt.show()  # Keep the final image displayed
+                cv2.imshow("Brightness Adjusted by Lux", brightened_image_cv)
+                if cv2.waitKey(1000) & 0xFF == ord('q'):
+                    break
+            except Exception as e:
+                error_count["image_adjustment"] += 1
+                print("Error adjusting image brightness:", e)
+
+class FileEventHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith(".xlsx"):
+            adjust_image_brightness_and_display(event.src_path)
+
+def display_metrics():
+    """Display collected performance metrics."""
+    print("\nPerformance Metrics:")
+    print(f"Average Data Collection Time: {sum(data_collection_times) / len(data_collection_times):.2f} seconds")
+    print(f"Average File Processing Time: {sum(file_processing_times) / len(file_processing_times):.2f} seconds")
+    print(f"Average Image Adjustment Time: {sum(image_adjustment_times) / len(image_adjustment_times):.2f} seconds")
+    print(f"Data Collection Success Rate: {100 * success_count['data_collection'] / (success_count['data_collection'] + error_count['data_collection']):.2f}%")
+    print(f"File Processing Success Rate: {100 * success_count['file_processing'] / (success_count['file_processing'] + error_count['file_processing']):.2f}%")
+    print(f"Image Adjustment Success Rate: {100 * success_count['image_adjustment'] / (success_count['image_adjustment'] + error_count['image_adjustment']):.2f}%")
+
+def plot_brightness_graph():
+    """Plot the brightness factor changes over time."""
+    timestamps, brightness_factors = zip(*brightness_logs)
+    plt.figure(figsize=(10, 6))
+    plt.plot(timestamps, brightness_factors, marker='o')
+    plt.xlabel('Timestamp')
+    plt.ylabel('Brightness Factor')
+    plt.title('Brightness Factor Over Time')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
 
 def main_data_logging():
-    """Main function to start data logging and brightness adjustment in threads."""
-    urllib.request.urlopen(start_dat)  # Start initial data collection
+    urllib.request.urlopen(start_dat)
     data_thread = threading.Thread(target=continuous_data_collection)
-    data_thread.daemon = True  # Stops when the main program exits
+    data_thread.daemon = True
     data_thread.start()
 
-    # Adjust brightness periodically based on the most recent Excel file generated
-    plt.ion()  # Enable interactive mode for real-time updates
-    while True:
-        latest_file = max(
-            (f for f in os.listdir() if f.startswith("Light") and f.endswith(".xlsx")),
-            key=os.path.getctime,
-            default=None
-        )
-        if latest_file:
-            adjust_image_brightness(latest_file)
-        time.sleep(10)  # Frequency of checking for new files and adjusting brightness
+    event_handler = FileEventHandler()
+    observer = Observer()
+    observer.schedule(event_handler, data_folder, recursive=False)
+    observer.start()
 
-# Start the main logging and brightness adjustment processes
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+    cv2.destroyAllWindows()
+    plot_brightness_graph()  # Plot the graph after execution
+    display_metrics()
+
 if __name__ == "__main__":
     main_data_logging()
